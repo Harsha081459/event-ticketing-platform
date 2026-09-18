@@ -17,7 +17,8 @@ data/
 .DS_Store
 Thumbs.db
 
-# Debug files
-core
+# Debug files (core dumps only at repo root — not server/core/)
+/core
+core.*
 *.dSYM/
 server.log
