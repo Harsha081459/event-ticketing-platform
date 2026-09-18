@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build server and client
+        run: make
+
+      - name: Build and run storage engine tests
+        run: make test_storage
+
+      - name: Clean
+        run: make clean

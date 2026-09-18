@@ -1,9 +1,10 @@
 # Event Ticketing Platform (Mini BookMyShow)
 
+![CI](https://github.com/Harsha081459/event-ticketing-platform/actions/workflows/ci.yml/badge.svg)
+
 A **multi-client event ticketing system** built from scratch in C, showcasing **Operating Systems** and **DBMS** concepts through a real-world application.
 
-**Project period:** Jun -- Jul 2025 — built as an Operating Systems / DBMS course project.
-This repository was published later, so the commit history postdates the original work.
+*Project period: built Jun–Jul 2025 as an Operating Systems / DBMS course project; published to GitHub Sep 2026.*
 
 ## Architecture
 
@@ -264,10 +265,27 @@ Every mutation is logged to the WAL **before** modifying data pages:
 3. buffer_pool_mark_dirty(pool, fd, page_id)       ← Marked dirty
 ```
 
+## Limitations
+
+- **WAL recovery is not wired into startup.** Every mutation is logged before
+  being applied and `wal_recover()` exists (`server/storage/wal.c:379`), but
+  `main.c` never calls it — the WAL demonstrates the log-first discipline, not
+  an automatic crash-replay on boot.
+- **Password hashing is non-cryptographic.** `etp_hash_password` in
+  `common/utils.c` uses two seeded djb2 passes (no salt, no KDF) — adequate for
+  a demo, not for real credential storage. A default `admin`/`admin123`
+  account is bootstrapped on first run (`server/auth/auth.c:279`).
+- **Plaintext TCP.** Commands and responses travel unencrypted — no TLS. This
+  is a teaching build for OS primitives, not a deployable service.
+- **B+ tree indexes are per-table files** serialized to disk on save/close
+  (`server/storage/btree.c`); there is no integrated query planner — the table
+  layer chooses index vs full scan.
+
 ## Author
 
-Built as a Systems Engineering project demonstrating OS + DBMS concepts.
+Harsha Vardhan Doppalapudi — IIIT Bangalore. Built as a Systems Engineering
+project demonstrating OS + DBMS concepts.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
