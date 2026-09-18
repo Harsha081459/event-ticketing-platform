@@ -200,7 +200,8 @@ typedef struct __attribute__((packed)) {
     uint32_t    booking_id;         /* FK → bookings.booking_id            */
     uint32_t    seat_id;            /* FK → seats.seat_id                  */
     uint8_t     is_deleted;         /* Soft delete flag                    */
-    char        _pad[7];            /* Pad to 16 bytes                     */
+    uint32_t    junction_id;
+    char        _pad[3];            /* Pad to 16 bytes                     */
 } booking_seat_record_t;
 
 /* ================================================================

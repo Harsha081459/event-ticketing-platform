@@ -279,6 +279,8 @@ The workflow tests create their own temporary data directory and launch the real
 
 For the interactive demo start `./bin/etp_server`, then `./bin/etp_client` in another terminal. Log in as `admin` with the documented demo password, create an organizer, create an event, then register a customer and book the seat IDs printed by `VIEW_SEATS`. Only an admin can register organizers; customer registration remains open. Keep the service on a trusted local machine because the default protocol has no transport encryption.
 
+Older builds overwrote booking IDs in booking-seat records. New junction records have a separate key while retaining the 16-byte record size. Legacy nonempty junction tables are rejected at startup rather than silently reused. Keep old `data/` for investigation; use the temporary-directory workflow test for a fresh demo. No automatic migration or data deletion is performed.
+
 ## Limitations
 
 - **Not a complete ACID engine.** `txn_abort()` releases locks but does not undo table mutations; table WAL entries still use transaction ID 0, so they cannot be correlated with booking transaction commits for recovery. Mid-operation I/O failures can leave partial writes. Do not claim crash-safe atomic bookings or use this for real payments.

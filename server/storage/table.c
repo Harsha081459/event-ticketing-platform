@@ -197,7 +197,16 @@ table_t *table_open(table_id_t id, const char *data_file,
             void *record = page_get_record(page, slot);
             if (record) {
                 uint32_t record_id;
-                memcpy(&record_id, record, sizeof(record_id));
+                size_t key_offset = id == TABLE_BOOKING_SEATS ? offsetof(booking_seat_record_t, junction_id) : 0;
+                memcpy(&record_id, (char *)record + key_offset, sizeof(record_id));
+                if (id == TABLE_BOOKING_SEATS && record_id == 0) {
+                    etp_log(LOG_ERROR, "Legacy booking-seat records lack junction IDs; migrate or use a separate fresh demo directory");
+                    buffer_pool_unpin(pool, table->data_fd, pid);
+                    btree_close(table->pk_index);
+                    page_file_close(table->data_fd);
+                    free(table);
+                    return NULL;
+                }
                 if (record_id > max_id) max_id = record_id;
             }
         }
@@ -265,7 +274,8 @@ static etp_result_t table_insert_unlocked(table_t *table, void *record, uint32_t
 
     /* Step 1: Auto-assign primary key */
     uint32_t new_id = etp_next_id(table->id);
-    *((uint32_t *)record) = new_id;
+    size_t key_offset = table->id == TABLE_BOOKING_SEATS ? offsetof(booking_seat_record_t, junction_id) : 0;
+    memcpy((char *)record + key_offset, &new_id, sizeof(new_id));
 
     /* Step 2: Find a page with free space */
     page_id_t target_page = INVALID_PAGE_ID;

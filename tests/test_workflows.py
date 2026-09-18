@@ -199,7 +199,8 @@ class Workflows(unittest.TestCase):
     def test_restart_preserves_records_and_allocates_new_ids(self):
         admin = self.admin()
         first_id = self.event(admin, "BeforeRestart")
-        self.ok(self.customer("alice").command(f"BOOK {first_id} 1"))
+        booking_response = self.ok(self.customer("alice").command(f"BOOK {first_id} 1 2"))
+        booking_id = int(re.search(r"Booking ID: (\d+)", booking_response)[1])
         self.stop()
         for client in self.clients:
             client.close()
@@ -211,6 +212,8 @@ class Workflows(unittest.TestCase):
         alice = self.client()
         self.ok(alice.command("LOGIN alice pass"))
         self.assertIn("Your bookings (1)", alice.command("MY_BOOKINGS"))
+        self.ok(alice.command(f"CANCEL {booking_id}"))
+        self.ok(alice.command(f"BOOK {first_id} 1 2"))
 
     def test_guest_cannot_self_assign_organizer(self):
         client = self.client()
