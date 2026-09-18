@@ -18,5 +18,9 @@ jobs:
       - name: Build and run storage engine tests
         run: make test_storage
 
+      - name: Test booking, protocol, concurrency and graceful restart
+        run: python3 tests/test_workflows.py
+        timeout-minutes: 4
+
       - name: Clean
         run: make clean

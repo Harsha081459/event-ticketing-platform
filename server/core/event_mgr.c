@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* ================================================================
  * Lifecycle
@@ -52,6 +53,8 @@ etp_result_t event_mgr_create_event(event_manager_t *em,
                                      float price,
                                      uint32_t *out_event_id) {
     if (!em || !name || !venue || !date || !time_str) return ETP_ERR_INVALID_ARG;
+
+    if (!isfinite(price) || price < 0) return ETP_ERR_INVALID_ARG;
 
     /* Validate constraints */
     if (total_rows == 0 || total_rows > MAX_SEAT_ROWS) {

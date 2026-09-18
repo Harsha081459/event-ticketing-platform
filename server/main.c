@@ -44,6 +44,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <sys/time.h>
 #include <string.h>
 #include <strings.h>    /* strcasecmp */
 #include <signal.h>
@@ -85,7 +87,37 @@ typedef struct {
 } server_context_t;
 
 static server_context_t g_ctx;
-static volatile int g_shutdown = 0;
+static volatile sig_atomic_t g_shutdown = 0;
+
+static ssize_t send_all(int fd, const char *data, size_t length) {
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = write(fd, data + sent, length - sent);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
+        sent += (size_t)n;
+    }
+    return (ssize_t)sent;
+}
+
+static ssize_t read_command_line(int fd, char *buf, size_t capacity) {
+    size_t used = 0;
+    int overflow = 0;
+    while (!g_shutdown) {
+        char ch;
+        ssize_t n = read(fd, &ch, 1);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (n <= 0) return -1;
+        if (ch == '\n') {
+            buf[used] = '\0';
+            return overflow ? -2 : (ssize_t)used;
+        }
+        if (ch == '\0') overflow = 1;
+        if (used + 1 < capacity) buf[used++] = ch;
+        else overflow = 1;
+    }
+    return -1;
+}
 
 /* ================================================================
  * Signal Handler — graceful shutdown on Ctrl+C
@@ -99,8 +131,10 @@ static void signal_handler(int sig) {
     const char *msg = "\n  Shutting down...\n";
     write(STDOUT_FILENO, msg, 20);
     g_shutdown = 1;
-    if (g_ctx.tcp_server && g_ctx.tcp_server->server_fd >= 0) {
-        shutdown(g_ctx.tcp_server->server_fd, SHUT_RDWR);
+    if (g_ctx.tcp_server) {
+        g_ctx.tcp_server->running = 0;
+        if (g_ctx.tcp_server->server_fd >= 0)
+            shutdown(g_ctx.tcp_server->server_fd, SHUT_RDWR);
     }
 }
 
@@ -115,6 +149,9 @@ static void handle_command(server_context_t *ctx, session_t *session,
 
 static void client_handler(int client_fd, void *context) {
     server_context_t *ctx = (server_context_t *)context;
+    struct timeval timeout = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
     /* Track connection */
     stats_inc_connections(ctx->stats);
@@ -123,7 +160,7 @@ static void client_handler(int client_fd, void *context) {
     session_t *session = auth_create_session(ctx->auth_mgr, client_fd);
     if (!session) {
         const char *err = "ERROR Server full, try later\n";
-        write(client_fd, err, strlen(err));
+        send_all(client_fd, err, strlen(err));
         stats_dec_connections(ctx->stats);
         return;
     }
@@ -137,17 +174,16 @@ static void client_handler(int client_fd, void *context) {
         "  ╚═══════════════════════════════════════════════════╝\n"
         "\n"
         "etp> ";
-    write(client_fd, banner, strlen(banner));
+    send_all(client_fd, banner, strlen(banner));
 
     /* Heap-allocate the response buffer to avoid stack overflow.
      * MAX_RESPONSE_SIZE (64KB) is too large for a worker thread's stack. */
     char *response = malloc(MAX_RESPONSE_SIZE);
     if (!response) {
         const char *err = "ERROR Server out of memory\n";
-        write(client_fd, err, strlen(err));
+        send_all(client_fd, err, strlen(err));
         auth_remove_session(ctx->auth_mgr, client_fd);
         stats_dec_connections(ctx->stats);
-        close(client_fd);
         return;
     }
 
@@ -157,8 +193,13 @@ static void client_handler(int client_fd, void *context) {
         memset(buf, 0, sizeof(buf));
 
         /* Read one line from client */
-        ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
-        if (n <= 0) break;  /* Client disconnected or error */
+        ssize_t n = read_command_line(client_fd, buf, sizeof(buf));
+        if (n == -2) {
+            const char *error = "ERROR Invalid or oversized command\netp> ";
+            send_all(client_fd, error, strlen(error));
+            continue;
+        }
+        if (n < 0) break;  /* Client disconnected or error */
 
         buf[n] = '\0';
 
@@ -167,7 +208,7 @@ static void client_handler(int client_fd, void *context) {
             buf[--n] = '\0';
         }
         if (n == 0) {
-            write(client_fd, "etp> ", 5);
+            send_all(client_fd, "etp> ", 5);
             continue;
         }
 
@@ -178,15 +219,15 @@ static void client_handler(int client_fd, void *context) {
         parsed_command_t cmd;
         if (parse_command(buf, &cmd) != 0) {
             const char *err = "ERROR Invalid command. Type HELP for usage.\n";
-            write(client_fd, err, strlen(err));
-            write(client_fd, "etp> ", 5);
+            send_all(client_fd, err, strlen(err));
+            send_all(client_fd, "etp> ", 5);
             continue;
         }
 
         /* QUIT — disconnect */
         if (cmd.type == CMD_QUIT) {
             const char *bye = "OK Goodbye!\n";
-            write(client_fd, bye, strlen(bye));
+            send_all(client_fd, bye, strlen(bye));
             break;
         }
 
@@ -195,8 +236,8 @@ static void client_handler(int client_fd, void *context) {
             char deny[256];
             snprintf(deny, sizeof(deny), "DENIED %s\n",
                      rbac_denial_reason(session->role, cmd.type));
-            write(client_fd, deny, strlen(deny));
-            write(client_fd, "etp> ", 5);
+            send_all(client_fd, deny, strlen(deny));
+            send_all(client_fd, "etp> ", 5);
             stats_inc_failed_requests(ctx->stats);
             continue;
         }
@@ -206,8 +247,8 @@ static void client_handler(int client_fd, void *context) {
         handle_command(ctx, session, &cmd, response, MAX_RESPONSE_SIZE);
 
         /* Send response */
-        write(client_fd, response, strlen(response));
-        write(client_fd, "etp> ", 5);
+        send_all(client_fd, response, strlen(response));
+        send_all(client_fd, "etp> ", 5);
     }
 
     /* Cleanup */
@@ -249,6 +290,10 @@ static void handle_command(server_context_t *ctx, session_t *session,
                                "Invalid role. Must be 'customer' or 'organizer'");
                 return;
             }
+        }
+        if (role == ROLE_ORGANIZER && session->role != ROLE_ADMIN) {
+            format_response(response, resp_size, RESP_DENIED, "Only an admin may create organizer accounts");
+            return;
         }
         uint32_t user_id = 0;
         rc = auth_register(ctx->auth_mgr, cmd->args[0], cmd->args[1], role, &user_id);
@@ -339,6 +384,15 @@ static void handle_command(server_context_t *ctx, session_t *session,
             return;
         }
         uint32_t eid = (uint32_t)atoi(cmd->args[0]);
+        event_record_t event;
+        if (event_mgr_get_event(ctx->event_mgr, eid, &event) != ETP_OK) {
+            format_response(response, resp_size, RESP_ERROR, "Event not found");
+            return;
+        }
+        if (session->role != ROLE_ADMIN && event.organizer_id != session->user_id) {
+            format_response(response, resp_size, RESP_DENIED, "You may only delete your own events");
+            return;
+        }
         rc = event_mgr_delete_event(ctx->event_mgr, eid);
         if (rc == ETP_OK) {
             format_response(response, resp_size, RESP_OK, "Event %u deleted", eid);

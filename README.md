@@ -71,7 +71,7 @@ A **multi-client event ticketing system** built from scratch in C, showcasing **
 | **Buffer Pool Manager** | LRU eviction, pin/unpin, dirty page tracking | `buffer_pool.c` |
 | **B+ Tree Index** | In-memory with disk persistence, range scan support | `btree.c` |
 | **Write-Ahead Logging** | All mutations logged before data modification | `wal.c` |
-| **ACID Transactions** | Atomicity (WAL), Isolation (2PL), Durability (fsync) | `txn_manager.c` |
+| **Lock-managed bookings** | Seat locking plus commit/abort records; full undo/crash recovery is not implemented | `txn_manager.c` |
 | **Soft Deletes** | `is_deleted` flag, no immediate space reclamation | `table.c` |
 | **Table Abstraction** | Unified CRUD with callback-based scan filters | `table.c` |
 | **Role-Based Access Control** | Permission matrix: 4 roles × 17 commands | `rbac.c` |
@@ -223,14 +223,14 @@ OK Goodbye!
 
 | Command | Role Required | Description |
 |---|---|---|
-| `REGISTER <user> <pass> [role]` | Any | Create new account |
+| `REGISTER <user> <pass> [role]` | Any for customer; admin for organizer | Create new account |
 | `LOGIN <user> <pass>` | Any | Authenticate |
 | `LOGOUT` | Logged in | End session |
 | `LIST_EVENTS` | Any | Show all active events |
 | `VIEW_EVENT <id>` | Any | Event details |
 | `VIEW_SEATS <id>` | Any | Seat map with availability |
 | `CREATE_EVENT <...>` | Organizer+ | Create event with seats |
-| `DELETE_EVENT <id>` | Organizer+ | Remove an event |
+| `DELETE_EVENT <id>` | Owner organizer or admin | Remove an event |
 | `BOOK <event_id> <seats...>` | Customer+ | Book seats (transactional) |
 | `CANCEL <booking_id>` | Customer+ | Cancel and release seats |
 | `MY_BOOKINGS` | Customer+ | View your bookings |
@@ -257,7 +257,7 @@ Eviction: LRU (Least Recently Used)
 Pin/Unpin: Prevents eviction during active use
 ```
 
-### WAL for Crash Recovery
+### Write-Ahead Logging (recovery not yet integrated)
 Every mutation is logged to the WAL **before** modifying data pages:
 ```
 1. wal_log_insert(wal, txn, table, key, data)    ← Logged first
@@ -265,7 +265,24 @@ Every mutation is logged to the WAL **before** modifying data pages:
 3. buffer_pool_mark_dirty(pool, fd, page_id)       ← Marked dirty
 ```
 
+## Verified local-demo workflow
+
+On Linux or WSL with GCC, Make and Python 3:
+
+```bash
+make
+make test_storage
+python3 tests/test_workflows.py
+```
+
+The workflow tests create their own temporary data directory and launch the real TCP server. They cover booking/cancellation/rebooking, eight clients contending for seats, disjoint concurrent bookings, duplicate seat rejection, simultaneous cancellation, fragmented/coalesced commands, oversized-line handling, organizer permissions, and orderly shutdown/restart with persistent records. They do not touch an existing `data/` directory. CI runs both the C storage tests and these socket-level tests.
+
+For the interactive demo start `./bin/etp_server`, then `./bin/etp_client` in another terminal. Log in as `admin` with the documented demo password, create an organizer, create an event, then register a customer and book the seat IDs printed by `VIEW_SEATS`. Only an admin can register organizers; customer registration remains open. Keep the service on a trusted local machine because the default protocol has no transport encryption.
+
 ## Limitations
+
+- **Not a complete ACID engine.** `txn_abort()` releases locks but does not undo table mutations; table WAL entries still use transaction ID 0, so they cannot be correlated with booking transaction commits for recovery. Mid-operation I/O failures can leave partial writes. Do not claim crash-safe atomic bookings or use this for real payments.
+- **Storage operations use a shared mutex** to protect mutable page/index state; seat-level locks coordinate bookings, but this is not a high-throughput database benchmark. Reads across multiple tables are not snapshot-isolated.
 
 - **WAL recovery is not wired into startup.** Every mutation is logged before
   being applied and `wal_recover()` exists (`server/storage/wal.c:379`), but

@@ -22,3 +22,5 @@ Thumbs.db
 core.*
 *.dSYM/
 server.log
+__pycache__/
+*.pyc

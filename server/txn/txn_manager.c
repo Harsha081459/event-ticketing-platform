@@ -142,11 +142,16 @@ int txn_commit(txn_manager_t *tm, txn_id_t txn_id) {
     if (lsn == INVALID_LSN) {
         pthread_mutex_unlock(&tm->mutex);
         etp_log(LOG_ERROR, "txn_mgr: WAL commit failed for txn %u", txn_id);
+        txn_abort(tm, txn_id);
         return -1;
     }
 
     /* Flush WAL to ensure durability */
-    wal_flush(tm->wal);
+    if (wal_flush(tm->wal) != 0) {
+        pthread_mutex_unlock(&tm->mutex);
+        txn_abort(tm, txn_id);
+        return -1;
+    }
 
     /* Copy lock info before releasing tm->mutex.
      * IMPORTANT: We must NOT hold tm->mutex while calling lock_mgr_unlock,

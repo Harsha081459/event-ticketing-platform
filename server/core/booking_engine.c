@@ -82,6 +82,13 @@ etp_result_t booking_book_seats(booking_engine_t *be, uint32_t user_id,
         return ETP_ERR_INVALID_ARG;
     }
 
+    for (int i = 0; i < num_seats; i++) {
+        if (seat_ids[i] == 0) return ETP_ERR_INVALID_ARG;
+        for (int j = 0; j < i; j++) {
+            if (seat_ids[i] == seat_ids[j]) return ETP_ERR_INVALID_ARG;
+        }
+    }
+
     /* Verify event exists and is active */
     event_record_t evt;
     etp_result_t rc = table_find_by_id(be->events_table, event_id, &evt);
@@ -185,7 +192,11 @@ etp_result_t booking_book_seats(booking_engine_t *be, uint32_t user_id,
         if (rc == ETP_OK) {
             seat_buf.status    = SEAT_BOOKED;
             seat_buf.booked_by = user_id;
-            table_update(be->seats_table, seat_ids[i], &seat_buf);
+            rc = table_update(be->seats_table, seat_ids[i], &seat_buf);
+        }
+        if (rc != ETP_OK) {
+            txn_abort(be->txn_mgr, txn_id);
+            return rc;
         }
     }
 
@@ -220,6 +231,11 @@ etp_result_t booking_cancel(booking_engine_t *be, uint32_t booking_id,
      * between our read and our update if we read outside the txn. */
     txn_id_t txn_id = txn_begin(be->txn_mgr);
     if (txn_id == INVALID_TXN_ID) return ETP_ERR_GENERIC;
+
+    if (txn_lock(be->txn_mgr, txn_id, TABLE_BOOKINGS, booking_id, LOCK_EXCLUSIVE) != 0) {
+        txn_abort(be->txn_mgr, txn_id);
+        return ETP_ERR_GENERIC;
+    }
 
     /* Find the booking */
     booking_record_t booking;

@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <time.h>
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -168,7 +169,10 @@ void tcp_server_start(tcp_server_t *server) {
         socklen_t addr_len = sizeof(client_addr);
 
         /* Wait for connection semaphore (limits concurrent connections) */
-        sem_wait(&g_conn_semaphore);
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec++;
+        if (sem_timedwait(&g_conn_semaphore, &deadline) != 0) continue;
 
         if (!server->running) {
             sem_post(&g_conn_semaphore);

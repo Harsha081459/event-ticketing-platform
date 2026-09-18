@@ -14,6 +14,7 @@
 #ifndef ETP_TCP_SERVER_H
 #define ETP_TCP_SERVER_H
 
+#include <signal.h>
 #include "thread_pool.h"
 #include "../../common/config.h"
 
@@ -38,7 +39,7 @@ typedef struct {
     int                 server_fd;       /* Listening socket fd          */
     int                 port;            /* Port number                  */
     thread_pool_t      *pool;            /* Worker thread pool           */
-    volatile int        running;         /* 1 while accepting clients    */
+    volatile sig_atomic_t running;         /* 1 while accepting clients    */
     client_handler_fn   handler;         /* Per-client handler callback  */
     void               *handler_context; /* Passed to handler            */
 } tcp_server_t;

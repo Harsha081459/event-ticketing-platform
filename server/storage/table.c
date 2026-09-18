@@ -24,6 +24,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+
+static pthread_mutex_t storage_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Placeholder txn_id until transaction manager is built (Phase 3) */
 #define CURRENT_TXN_ID  0
@@ -180,6 +183,34 @@ table_t *table_open(table_id_t id, const char *data_file,
         return NULL;
     }
 
+    uint32_t max_id = 0;
+    uint32_t pages = page_get_count(table->data_fd);
+    for (page_id_t pid = 0; pid < pages; pid++) {
+        void *page = buffer_pool_fetch(pool, table->data_fd, pid);
+        if (!page) {
+            btree_close(table->pk_index);
+            page_file_close(table->data_fd);
+            free(table);
+            return NULL;
+        }
+        for (uint16_t slot = 0; slot < page_get_record_count(page); slot++) {
+            void *record = page_get_record(page, slot);
+            if (record) {
+                uint32_t record_id;
+                memcpy(&record_id, record, sizeof(record_id));
+                if (record_id > max_id) max_id = record_id;
+            }
+        }
+        buffer_pool_unpin(pool, table->data_fd, pid);
+    }
+    if (max_id == UINT32_MAX) {
+        btree_close(table->pk_index);
+        page_file_close(table->data_fd);
+        free(table);
+        return NULL;
+    }
+    etp_set_next_id(id, max_id + 1);
+
     etp_log(LOG_INFO, "Table '%s' opened (record_size=%u)", table->name, table->record_size);
     return table;
 }
@@ -228,7 +259,7 @@ void table_close(table_t *table)
  *   5. Index the record in the B+ Tree (key=ID, value={page_id,slot_id})
  *   6. Return the assigned ID
  */
-etp_result_t table_insert(table_t *table, void *record, uint32_t *out_id)
+static etp_result_t table_insert_unlocked(table_t *table, void *record, uint32_t *out_id)
 {
     if (!table || !record) return ETP_ERR_INVALID_ARG;
 
@@ -335,7 +366,7 @@ etp_result_t table_insert(table_t *table, void *record, uint32_t *out_id)
  *   4. Copy record to caller's buffer
  *   5. Unpin the page
  */
-etp_result_t table_find_by_id(table_t *table, uint32_t id, void *out_record)
+static etp_result_t table_find_by_id_unlocked(table_t *table, uint32_t id, void *out_record)
 {
     if (!table || !out_record) return ETP_ERR_INVALID_ARG;
 
@@ -385,7 +416,7 @@ etp_result_t table_find_by_id(table_t *table, uint32_t id, void *out_record)
  *   4. Update the record in the page
  *   5. Mark page dirty and unpin
  */
-etp_result_t table_update(table_t *table, uint32_t id, const void *new_record)
+static etp_result_t table_update_unlocked(table_t *table, uint32_t id, const void *new_record)
 {
     if (!table || !new_record) return ETP_ERR_INVALID_ARG;
 
@@ -454,7 +485,7 @@ etp_result_t table_update(table_t *table, uint32_t id, const void *new_record)
  *   5. Remove from B+ Tree index
  *   6. Mark page dirty and unpin
  */
-etp_result_t table_delete(table_t *table, uint32_t id)
+static etp_result_t table_delete_unlocked(table_t *table, uint32_t id)
 {
     if (!table) return ETP_ERR_INVALID_ARG;
 
@@ -522,7 +553,7 @@ etp_result_t table_delete(table_t *table, uint32_t id)
  *
  * Returns the number of matching records found (up to max_results).
  */
-int table_scan(table_t *table, table_filter_fn filter, void *context,
+static int table_scan_unlocked(table_t *table, table_filter_fn filter, void *context,
                void *results, int max_results)
 {
     if (!table || !results || max_results <= 0) return 0;
@@ -567,7 +598,7 @@ int table_scan(table_t *table, table_filter_fn filter, void *context,
  *
  * Full scan without copying data — just counts.
  */
-int table_count(table_t *table)
+static int table_count_unlocked(table_t *table)
 {
     if (!table) return 0;
 
@@ -605,7 +636,7 @@ int table_count(table_t *table)
  * Delegates to the buffer pool's flush-all mechanism.
  * Returns 0 on success, -1 on failure.
  */
-int table_flush(table_t *table)
+static int table_flush_unlocked(table_t *table)
 {
     if (!table || !table->pool) return -1;
 
@@ -615,4 +646,53 @@ int table_flush(table_t *table)
      * buffer pool API doesn't support it. This is acceptable since flush
      * is infrequent (table close, checkpoint). */
     return buffer_pool_flush_all(table->pool);
+}
+
+etp_result_t table_insert(table_t *table, void *record, uint32_t *out_id) {
+    pthread_mutex_lock(&storage_mutex);
+    etp_result_t rc = table_insert_unlocked(table, record, out_id);
+    pthread_mutex_unlock(&storage_mutex);
+    return rc;
+}
+
+etp_result_t table_find_by_id(table_t *table, uint32_t id, void *out_record) {
+    pthread_mutex_lock(&storage_mutex);
+    etp_result_t rc = table_find_by_id_unlocked(table, id, out_record);
+    pthread_mutex_unlock(&storage_mutex);
+    return rc;
+}
+
+etp_result_t table_update(table_t *table, uint32_t id, const void *record) {
+    pthread_mutex_lock(&storage_mutex);
+    etp_result_t rc = table_update_unlocked(table, id, record);
+    pthread_mutex_unlock(&storage_mutex);
+    return rc;
+}
+
+etp_result_t table_delete(table_t *table, uint32_t id) {
+    pthread_mutex_lock(&storage_mutex);
+    etp_result_t rc = table_delete_unlocked(table, id);
+    pthread_mutex_unlock(&storage_mutex);
+    return rc;
+}
+
+int table_scan(table_t *table, table_filter_fn filter, void *context, void *results, int max_results) {
+    pthread_mutex_lock(&storage_mutex);
+    int count = table_scan_unlocked(table, filter, context, results, max_results);
+    pthread_mutex_unlock(&storage_mutex);
+    return count;
+}
+
+int table_count(table_t *table) {
+    pthread_mutex_lock(&storage_mutex);
+    int count = table_count_unlocked(table);
+    pthread_mutex_unlock(&storage_mutex);
+    return count;
+}
+
+int table_flush(table_t *table) {
+    pthread_mutex_lock(&storage_mutex);
+    int rc = table_flush_unlocked(table);
+    pthread_mutex_unlock(&storage_mutex);
+    return rc;
 }
