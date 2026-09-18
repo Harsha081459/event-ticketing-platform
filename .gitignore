@@ -1,0 +1,23 @@
+# Build artifacts
+bin/
+*.o
+*.d
+
+# Data files (generated at runtime)
+data/
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+core
+*.dSYM/
+server.log
